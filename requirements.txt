@@ -1,0 +1,5 @@
+torch==1.13.1
+transformers==4.29.2
+coremltools==6.3
+numpy==1.23.5
+sentencepiece==0.2.0
