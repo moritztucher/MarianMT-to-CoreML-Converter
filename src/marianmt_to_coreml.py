@@ -10,8 +10,12 @@ import logging
 import argparse
 
 # Set up logging
-logging.basicConfig(filename='conversion.log', level=logging.DEBUG, 
-                    format='%(asctime)s - %(levelname)s - %(message)s')
+logging.basicConfig(
+    filename='conversion.log',
+    level=logging.DEBUG, 
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
 
 class ModelWrapper(torch.nn.Module):
     def __init__(self, model):
@@ -24,37 +28,31 @@ class ModelWrapper(torch.nn.Module):
 
 def convert_marianmt_to_coreml(model_name, tokenizer_name, example_text, output_filename):
     try:
-        logging.info(f"Starting conversion process for {model_name}")
-        logging.info(f"Python version: {sys.version}")
-        logging.info(f"PyTorch version: {torch.__version__}")
-        logging.info(f"Coremltools version: {ct.__version__}")
-
-        logging.info(f"Loading model and tokenizer for {model_name}...")
+        logging.info("Starting conversion process.")
+        logging.info(f"Model: {model_name}, Tokenizer: {tokenizer_name}")
+        
+        logging.info("Loading model and tokenizer...")
         tokenizer = MarianTokenizer.from_pretrained(tokenizer_name)
         model = MarianMTModel.from_pretrained(model_name).eval()
         wrapped_model = ModelWrapper(model)
         logging.info("Model and tokenizer loaded successfully.")
 
-        logging.info(f"Tokenizing example input text: '{example_text}'")
+        logging.info("Tokenizing example input text.")
         inputs = tokenizer(example_text, return_tensors="pt", max_length=128, padding="max_length", truncation=True)
+        input_ids, attention_mask = inputs["input_ids"], inputs["attention_mask"]
         logging.info("Tokenization completed.")
 
-        input_ids = inputs["input_ids"]
-        attention_mask = inputs["attention_mask"]
-
-        logging.info(f"Tracing the MarianMT model '{model_name}' with TorchScript...")
-        wrapped_model.eval()
-
+        logging.info("Tracing the MarianMT model with TorchScript.")
         with torch.no_grad():
             traced_model = torch.jit.trace(wrapped_model, (input_ids, attention_mask))
             torch.jit.save(traced_model, "traced_model.pt")
-        logging.info("Tracing completed successfully.")
+        logging.info("Model traced and saved as 'traced_model.pt'.")
 
-        logging.info("Loading traced model...")
+        logging.info("Loading the traced model for CoreML conversion.")
         traced_model = torch.jit.load("traced_model.pt")
         logging.info("Traced model loaded successfully.")
 
-        logging.info("Starting CoreML conversion...")
+        logging.info("Converting model to CoreML format with 16-bit quantization.")
         mlmodel = ct.convert(
             traced_model,
             inputs=[
@@ -62,16 +60,23 @@ def convert_marianmt_to_coreml(model_name, tokenizer_name, example_text, output_
                 ct.TensorType(shape=attention_mask.shape, dtype=int, name="attention_mask"),
             ],
             outputs=[ct.TensorType(name="logits")],
-            minimum_deployment_target=ct.target.iOS14
+            minimum_deployment_target=ct.target.iOS16
         )
-        logging.info("CoreML conversion completed successfully.")
+        logging.info("CoreML model conversion completed.")
 
-        logging.info(f"Saving CoreML model to '{output_filename}'...")
+        logging.info("Saving CoreML model...")
         mlmodel.save(output_filename)
-        logging.info(f"CoreML model saved successfully to '{output_filename}'\n")
+        logging.info(f"CoreML model saved to '{output_filename}'.")
+
+        logging.info("Applying 8-bit quantization to reduce model size.")
+        quantized_mlmodel = ct.models.neural_network.quantization_utils.quantize_weights(mlmodel, nbits=8)
+        quantized_filename = output_filename.replace(".mlmodel", "-quantized.mlmodel")
+        quantized_mlmodel.save(quantized_filename)
+        logging.info(f"Quantized CoreML model saved to '{quantized_filename}'.\n")
 
     except Exception as e:
-        logging.error(f"An error occurred: {str(e)}")
+        logging.error("Error occurred during the conversion process.")
+        logging.error(f"Error: {e}")
         logging.error("Traceback:")
         logging.error(traceback.format_exc())
         raise
@@ -87,15 +92,14 @@ def main():
 
     tokenizer_name = args.tokenizer if args.tokenizer else args.model
 
-    logging.info("Script starting...")
+    logging.info("=== Conversion Script Starting ===")
     try:
         convert_marianmt_to_coreml(args.model, tokenizer_name, args.example, args.output)
-        logging.info("Conversion completed successfully.")
+        logging.info("=== Conversion Script Completed Successfully ===")
     except Exception as e:
-        logging.error(f"An error occurred in main: {str(e)}")
-        logging.error("Traceback:")
-        logging.error(traceback.format_exc())
-    logging.info("Script finished.")
+        logging.error("Fatal error during main execution.")
+        logging.error(f"Error: {e}")
+    logging.info("=== Script Finished ===\n")
 
 if __name__ == "__main__":
     main()
